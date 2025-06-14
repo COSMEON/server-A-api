@@ -3,6 +3,7 @@ package main
 import (
 	"database/sql"
 	"log"
+	"os"
 
 	_ "github.com/lib/pq"
 )
@@ -11,9 +12,21 @@ var db *sql.DB
 
 func InitDB() {
 	var err error
-	db, err = sql.Open("postgres", "user=postgres password=Ayan46@93#Yo dbname=postgres sslmode=disable")
+
+	// Use environment variable for database connection, fallback to default
+	dbURL := os.Getenv("DATABASE_URL")
+	if dbURL == "" {
+		dbURL = "user=postgres password=Ayan46@93#Yo dbname=postgres sslmode=disable"
+	}
+
+	db, err = sql.Open("postgres", dbURL)
 	if err != nil {
 		log.Fatal("Failed to connect to DB:", err)
+	}
+
+	// Test the connection
+	if err = db.Ping(); err != nil {
+		log.Fatal("Failed to ping DB:", err)
 	}
 
 	_, err = db.Exec(`
@@ -35,4 +48,6 @@ func InitDB() {
 	if err != nil {
 		log.Fatal("Failed to create tables:", err)
 	}
+
+	log.Println("Database initialized successfully")
 }
