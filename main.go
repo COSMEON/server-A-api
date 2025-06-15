@@ -9,6 +9,7 @@ import (
 	"log"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"time"
@@ -52,7 +53,7 @@ func NewServer() *Server {
 		dbURL = "user=postgres password=password dbname=postgres sslmode=disable"
 	}
 
-	storageServerURL := os.Getenv("STORAGE_SERVER_URL")
+	storageServerURL := os.Getenv("SERVER_B_URL")
 	if storageServerURL == "" {
 		storageServerURL = "http://localhost:8081"
 	}
@@ -328,17 +329,52 @@ func (s *Server) readFileContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Forward request to storage server
-	log.Printf("Fetching file content for codebase %s, file %s", codebaseID, filePath)
-	url := fmt.Sprintf("%s/content/%s?file=%s", s.storageServerURL, codebaseID, filePath)
-	resp, err := http.Get(url)
+	// Verify file exists in database first
+	var exists bool
+	err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM files WHERE codebase_id = $1 AND file_path = $2)",
+		codebaseID, filePath).Scan(&exists)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve file from storage")
+		log.Printf("Database error checking file existence: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Database error")
+		return
+	}
+	if !exists {
+		respondWithError(w, http.StatusNotFound, "File not found in codebase")
+		return
+	}
+
+	// Forward request to storage server with proper URL encoding
+	log.Printf("Fetching file content for codebase %s, file %s", codebaseID, filePath)
+	encodedFilePath := url.QueryEscape(filePath)
+	requestURL := fmt.Sprintf("%s/content/%s?file=%s", s.storageServerURL, codebaseID, encodedFilePath)
+
+	resp, err := http.Get(requestURL)
+	if err != nil {
+		log.Printf("Error fetching file content from storage server: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Storage server unavailable")
 		return
 	}
 	defer resp.Body.Close()
 
-	// Copy response
+	// Check if storage server returned an error
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Storage server returned status %d for file %s", resp.StatusCode, filePath)
+
+		// Try to read error response from storage server
+		body, _ := io.ReadAll(resp.Body)
+		if len(body) > 0 {
+			log.Printf("Storage server error response: %s", string(body))
+		}
+
+		if resp.StatusCode == http.StatusNotFound {
+			respondWithError(w, http.StatusNotFound, "File not found in storage")
+		} else {
+			respondWithError(w, http.StatusInternalServerError, "Failed to retrieve file from storage")
+		}
+		return
+	}
+
+	// Copy response headers and body
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
@@ -359,21 +395,68 @@ func (s *Server) downloadFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Forward request to storage server
-	url := fmt.Sprintf("%s/download/%s?file=%s", s.storageServerURL, codebaseID, filePath)
-	resp, err := http.Get(url)
+	// Verify file exists in database first
+	var exists bool
+	var fileName string
+	err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM files WHERE codebase_id = $1 AND file_path = $2), file_name FROM files WHERE codebase_id = $1 AND file_path = $2",
+		codebaseID, filePath).Scan(&exists, &fileName)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve file from storage")
+		// Try a simpler query if the complex one fails
+		err = s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM files WHERE codebase_id = $1 AND file_path = $2)",
+			codebaseID, filePath).Scan(&exists)
+		if err != nil {
+			log.Printf("Database error checking file existence: %v", err)
+			respondWithError(w, http.StatusInternalServerError, "Database error")
+			return
+		}
+		// Get filename separately if needed
+		if exists {
+			s.db.QueryRow("SELECT file_name FROM files WHERE codebase_id = $1 AND file_path = $2",
+				codebaseID, filePath).Scan(&fileName)
+		}
+	}
+
+	if !exists {
+		respondWithError(w, http.StatusNotFound, "File not found in codebase")
+		return
+	}
+
+	// Forward request to storage server with proper URL encoding
+	encodedFilePath := url.QueryEscape(filePath)
+	requestURL := fmt.Sprintf("%s/download/%s?file=%s", s.storageServerURL, codebaseID, encodedFilePath)
+
+	resp, err := http.Get(requestURL)
+	if err != nil {
+		log.Printf("Error downloading file from storage server: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Storage server unavailable")
 		return
 	}
 	defer resp.Body.Close()
 
-	// Copy headers and response
+	// Check if storage server returned an error
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Storage server returned status %d for file download %s", resp.StatusCode, filePath)
+
+		if resp.StatusCode == http.StatusNotFound {
+			respondWithError(w, http.StatusNotFound, "File not found in storage")
+		} else {
+			respondWithError(w, http.StatusInternalServerError, "Failed to retrieve file from storage")
+		}
+		return
+	}
+
+	// Copy headers from storage server response
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
+
+	// Ensure proper filename in Content-Disposition if not set by storage server
+	if w.Header().Get("Content-Disposition") == "" && fileName != "" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", fileName))
+	}
+
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
@@ -387,14 +470,35 @@ func (s *Server) downloadZip(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Check if codebase exists
+	var exists bool
+	err := s.db.QueryRow("SELECT EXISTS(SELECT 1 FROM codebases WHERE id = $1)", codebaseID).Scan(&exists)
+	if err != nil || !exists {
+		respondWithError(w, http.StatusNotFound, "Codebase not found")
+		return
+	}
+
 	// Forward request to storage server
-	url := fmt.Sprintf("%s/zip/%s", s.storageServerURL, codebaseID)
-	resp, err := http.Get(url)
+	requestURL := fmt.Sprintf("%s/zip/%s", s.storageServerURL, codebaseID)
+	resp, err := http.Get(requestURL)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Failed to retrieve ZIP from storage")
+		log.Printf("Error downloading ZIP from storage server: %v", err)
+		respondWithError(w, http.StatusInternalServerError, "Storage server unavailable")
 		return
 	}
 	defer resp.Body.Close()
+
+	// Check if storage server returned an error
+	if resp.StatusCode != http.StatusOK {
+		log.Printf("Storage server returned status %d for ZIP download", resp.StatusCode)
+
+		if resp.StatusCode == http.StatusNotFound {
+			respondWithError(w, http.StatusNotFound, "Codebase not found in storage")
+		} else {
+			respondWithError(w, http.StatusInternalServerError, "Failed to retrieve ZIP from storage")
+		}
+		return
+	}
 
 	// Copy headers and response
 	for key, values := range resp.Header {
@@ -402,6 +506,12 @@ func (s *Server) downloadZip(w http.ResponseWriter, r *http.Request) {
 			w.Header().Add(key, value)
 		}
 	}
+
+	// Ensure proper filename in Content-Disposition if not set
+	if w.Header().Get("Content-Disposition") == "" {
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"codebase-%s.zip\"", codebaseID))
+	}
+
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }

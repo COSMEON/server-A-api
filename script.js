@@ -204,6 +204,11 @@ async function listCodebases() {
 
   try {
     const response = await fetch(`${API_BASE}/codebases`);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
     const data = await response.json();
 
     responseDiv.innerHTML = `<span class="success">✅ Codebases Retrieved<br><pre>${JSON.stringify(
@@ -236,6 +241,11 @@ async function getCodebaseDetails() {
 
   try {
     const response = await fetch(`${API_BASE}/codebases/${directoryId}`);
+    
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+    
     const data = await response.json();
 
     const responseClass = data.success ? "success" : "error";
@@ -271,28 +281,41 @@ async function readFileMetadata() {
   btn.textContent = "Reading...";
 
   try {
-    const response = await fetch(
-      `${API_BASE}/codebases/${directoryId}/content?file=${encodeURIComponent(
-        filePath
-      )}`
-    );
+    // Properly encode the file path for URL
+    const encodedFilePath = encodeURIComponent(filePath);
+    const url = `${API_BASE}/codebases/${directoryId}/content?file=${encodedFilePath}`;
+    
+    console.log("Requesting URL:", url);
+    
+    const response = await fetch(url);
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      // Try to get error details from response
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      try {
+        const errorData = await response.json();
+        if (errorData.error) {
+          errorMessage = errorData.error;
+        }
+      } catch (e) {
+        // If response is not JSON, use the status text
+      }
+      throw new Error(errorMessage);
     }
 
     const data = await response.json();
-    const responseClass = data.success ? "success" : "error";
-    const icon = data.success ? "✅" : "❌";
+    const responseClass = data.success !== false ? "success" : "error";
+    const icon = data.success !== false ? "✅" : "❌";
 
-    responseDiv.innerHTML = `<span class="${responseClass}">${icon} File Metadata<br><pre>${JSON.stringify(
+    responseDiv.innerHTML = `<span class="${responseClass}">${icon} File Content<br><pre>${JSON.stringify(
       data,
       null,
       2
     )}</pre></span>`;
     responseDiv.style.display = "block";
   } catch (error) {
-    responseDiv.innerHTML = `<span class="error">❌ Failed to read file metadata<br>Error: ${error.message}<br><br>This route might be missing from your Go server's main() function.</span>`;
+    console.error("Error reading file:", error);
+    responseDiv.innerHTML = `<span class="error">❌ Failed to read file content<br>Error: ${error.message}<br><br>Make sure the storage server is running and the file path is correct.</span>`;
     responseDiv.style.display = "block";
   } finally {
     btn.disabled = false;
@@ -317,31 +340,56 @@ async function downloadFile() {
   btn.textContent = "Downloading...";
 
   try {
-    const response = await fetch(
-      `${API_BASE}/codebases/${directoryId}/download?file=${encodeURIComponent(
-        filePath
-      )}`
-    );
+    // Properly encode the file path for URL
+    const encodedFilePath = encodeURIComponent(filePath);
+    const url = `${API_BASE}/codebases/${directoryId}/download?file=${encodedFilePath}`;
+    
+    console.log("Downloading from URL:", url);
+    
+    const response = await fetch(url);
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      // Try to get error details from response
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      try {
+        const errorData = await response.json();
+        if (errorData.error) {
+          errorMessage = errorData.error;
+        }
+      } catch (e) {
+        // If response is not JSON, use the status text
+      }
+      throw new Error(errorMessage);
     }
 
     // Create download link
     const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
+    const downloadUrl = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = filePath.split("/").pop(); // Get filename from path
+    a.href = downloadUrl;
+    
+    // Try to get filename from Content-Disposition header
+    const contentDisposition = response.headers.get('Content-Disposition');
+    let filename = filePath.split("/").pop(); // Default to last part of path
+    
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1].replace(/['"]/g, '');
+      }
+    }
+    
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
-    window.URL.revokeObjectURL(url);
+    window.URL.revokeObjectURL(downloadUrl);
     document.body.removeChild(a);
 
-    responseDiv.innerHTML = `<span class="success">✅ File downloaded successfully!</span>`;
+    responseDiv.innerHTML = `<span class="success">✅ File "${filename}" downloaded successfully!</span>`;
     responseDiv.style.display = "block";
   } catch (error) {
-    responseDiv.innerHTML = `<span class="error">❌ Failed to download file<br>Error: ${error.message}<br><br>This route might be missing from your Go server's main() function.</span>`;
+    console.error("Error downloading file:", error);
+    responseDiv.innerHTML = `<span class="error">❌ Failed to download file<br>Error: ${error.message}<br><br>Make sure the storage server is running and the file exists.</span>`;
     responseDiv.style.display = "block";
   } finally {
     btn.disabled = false;
@@ -363,27 +411,53 @@ async function downloadZip() {
   btn.textContent = "Downloading ZIP...";
 
   try {
-    const response = await fetch(`${API_BASE}/codebases/${directoryId}/zip`);
+    const url = `${API_BASE}/codebases/${directoryId}/zip`;
+    console.log("Downloading ZIP from URL:", url);
+    
+    const response = await fetch(url);
 
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      // Try to get error details from response
+      let errorMessage = `HTTP ${response.status}: ${response.statusText}`;
+      try {
+        const errorData = await response.json();
+        if (errorData.error) {
+          errorMessage = errorData.error;
+        }
+      } catch (e) {
+        // If response is not JSON, use the status text
+      }
+      throw new Error(errorMessage);
     }
 
     // Create download link
     const blob = await response.blob();
-    const url = window.URL.createObjectURL(blob);
+    const downloadUrl = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url;
-    a.download = `codebase-${directoryId}.zip`;
+    a.href = downloadUrl;
+    
+    // Try to get filename from Content-Disposition header
+    const contentDisposition = response.headers.get('Content-Disposition');
+    let filename = `codebase-${directoryId}.zip`; // Default filename
+    
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1].replace(/['"]/g, '');
+      }
+    }
+    
+    a.download = filename;
     document.body.appendChild(a);
     a.click();
-    window.URL.revokeObjectURL(url);
+    window.URL.revokeObjectURL(downloadUrl);
     document.body.removeChild(a);
 
-    responseDiv.innerHTML = `<span class="success">✅ ZIP file downloaded successfully!</span>`;
+    responseDiv.innerHTML = `<span class="success">✅ ZIP file "${filename}" downloaded successfully!</span>`;
     responseDiv.style.display = "block";
   } catch (error) {
-    responseDiv.innerHTML = `<span class="error">❌ Failed to download ZIP<br>Error: ${error.message}<br><br>This route might be missing from your Go server's main() function.</span>`;
+    console.error("Error downloading ZIP:", error);
+    responseDiv.innerHTML = `<span class="error">❌ Failed to download ZIP<br>Error: ${error.message}<br><br>Make sure the storage server is running and the codebase exists.</span>`;
     responseDiv.style.display = "block";
   } finally {
     btn.disabled = false;
