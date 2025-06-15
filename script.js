@@ -9,18 +9,12 @@ window.onload = function () {
   document.querySelectorAll('input[name="uploadType"]').forEach((radio) => {
     radio.addEventListener("change", function () {
       const fileInput = document.getElementById("fileInput");
-      const fileInputLabel = document.getElementById("fileInputLabel");
-
       if (this.value === "directory") {
         fileInput.setAttribute("webkitdirectory", "");
         fileInput.setAttribute("directory", "");
-        fileInput.removeAttribute("multiple");
-        fileInputLabel.textContent = "Choose directory:";
       } else {
         fileInput.removeAttribute("webkitdirectory");
         fileInput.removeAttribute("directory");
-        fileInput.setAttribute("multiple", "");
-        fileInputLabel.textContent = "Choose files:";
       }
       fileInput.value = ""; // Clear current selection
       document.getElementById("file-info").style.display = "none";
@@ -58,12 +52,14 @@ window.onload = function () {
       }
 
       fileInfo.innerHTML = `
-        <strong>Selected:</strong> ${files.length} files (${uploadType})<br>
-        <strong>Total Size:</strong> ${sizeInMB} MB<br>
-        <strong>File Types:</strong> ${typesList}${
+                        <strong>Selected:</strong> ${
+                          files.length
+                        } files (${uploadType})<br>
+                        <strong>Total Size:</strong> ${sizeInMB} MB<br>
+                        <strong>File Types:</strong> ${typesList}${
         rootDir ? `<br><strong>Root Directory:</strong> ${rootDir}` : ""
       }
-      `;
+                    `;
       fileInfo.style.display = "block";
       uploadBtn.disabled = false;
     } else {
@@ -85,11 +81,6 @@ async function testHealth(silent = false) {
 
   try {
     const response = await fetch(`${API_BASE}/health`);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
     const data = await response.json();
 
     if (!silent) {
@@ -106,7 +97,7 @@ async function testHealth(silent = false) {
     serverOnline = true;
   } catch (error) {
     if (!silent) {
-      responseDiv.innerHTML = `<span class="error">❌ Failed to connect to server<br>Error: ${error.message}<br><br>Make sure the Go server is running on port 8080.</span>`;
+      responseDiv.innerHTML = `<span class="error">❌ Failed to connect to server<br>Error: ${error.message}<br><br>Make sure the Go server is running on port 8080 and has the missing functions added.</span>`;
       responseDiv.style.display = "block";
     }
 
@@ -128,6 +119,9 @@ async function uploadFiles() {
   const responseDiv = document.getElementById("upload-response");
   const progressDiv = document.getElementById("upload-progress");
   const progressBar = document.getElementById("progress-bar");
+  const uploadType = document.querySelector(
+    'input[name="uploadType"]:checked'
+  ).value;
 
   if (files.length === 0) {
     alert("Please select files first");
@@ -140,77 +134,64 @@ async function uploadFiles() {
   progressBar.style.width = "0%";
 
   const formData = new FormData();
+  let processedFiles = 0;
 
-  // Add all files to FormData
   for (let file of files) {
     formData.append("files", file);
+
+    // Handle path based on upload type
+    if (uploadType === "directory" && file.webkitRelativePath) {
+      // For directory uploads, use the relative path
+      formData.append(`path_${file.name}`, file.webkitRelativePath);
+    } else {
+      // For individual files, just use the filename
+      formData.append(`path_${file.name}`, file.name);
+    }
+
+    processedFiles++;
+
+    // Update progress
+    const progress = (processedFiles / files.length) * 50; // 50% for file processing
+    progressBar.style.width = progress + "%";
   }
 
-  // Simulate progress during upload preparation
-  progressBar.style.width = "25%";
-
   try {
-    const xhr = new XMLHttpRequest();
-
-    // Set up progress tracking
-    xhr.upload.addEventListener("progress", function (e) {
-      if (e.lengthComputable) {
-        const percentComplete = (e.loaded / e.total) * 75 + 25; // 25-100%
-        progressBar.style.width = percentComplete + "%";
-      }
+    const response = await fetch(`${API_BASE}/upload`, {
+      method: "POST",
+      body: formData,
     });
 
-    // Set up the response handler
-    xhr.onload = function () {
-      progressBar.style.width = "100%";
+    progressBar.style.width = "100%";
 
-      try {
-        const data = JSON.parse(xhr.responseText);
-        const responseClass = data.success ? "success" : "error";
-        const icon = data.success ? "✅" : "❌";
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
 
-        responseDiv.innerHTML = `<span class="${responseClass}">${icon} Upload ${
-          data.success ? "Successful" : "Failed"
-        }!<br><pre>${JSON.stringify(data, null, 2)}</pre></span>`;
-        responseDiv.style.display = "block";
+    const data = await response.json();
+    const responseClass = data.success ? "success" : "error";
+    const icon = data.success ? "✅" : "❌";
 
-        // Auto-fill directory ID fields for testing
-        if (data.success && (data.uuid || data.directory_id)) {
-          const uuid = data.uuid || data.directory_id;
-          document.getElementById("directoryId").value = uuid;
-          document.getElementById("readDirectoryId").value = uuid;
-          document.getElementById("downloadDirectoryId").value = uuid;
-          document.getElementById("zipDirectoryId").value = uuid;
-        }
-      } catch (parseError) {
-        responseDiv.innerHTML = `<span class="error">❌ Upload failed - Invalid response format<br>Error: ${parseError.message}</span>`;
-        responseDiv.style.display = "block";
-      }
-
-      btn.disabled = false;
-      btn.textContent = "Upload Selected Files";
-      setTimeout(() => {
-        progressDiv.style.display = "none";
-      }, 2000);
-    };
-
-    xhr.onerror = function () {
-      responseDiv.innerHTML = `<span class="error">❌ Upload failed - Network error</span>`;
-      responseDiv.style.display = "block";
-      btn.disabled = false;
-      btn.textContent = "Upload Selected Files";
-      progressDiv.style.display = "none";
-    };
-
-    // Send the request
-    xhr.open("POST", `${API_BASE}/upload`);
-    xhr.send(formData);
-  } catch (error) {
-    responseDiv.innerHTML = `<span class="error">❌ Upload failed<br>Error: ${error.message}</span>`;
+    responseDiv.innerHTML = `<span class="${responseClass}">${icon} Upload ${
+      data.success ? "Successful" : "Failed"
+    }!<br><pre>${JSON.stringify(data, null, 2)}</pre></span>`;
     responseDiv.style.display = "block";
+
+    // Auto-fill directory ID fields for testing
+    if (data.directory_id) {
+      document.getElementById("directoryId").value = data.directory_id;
+      document.getElementById("readDirectoryId").value = data.directory_id;
+      document.getElementById("downloadDirectoryId").value = data.directory_id;
+      document.getElementById("zipDirectoryId").value = data.directory_id;
+    }
+  } catch (error) {
+    responseDiv.innerHTML = `<span class="error">❌ Upload failed<br>Error: ${error.message}<br><br>This might be due to missing respondWithError() function in Go server.</span>`;
+    responseDiv.style.display = "block";
+  } finally {
     btn.disabled = false;
     btn.textContent = "Upload Selected Files";
-    progressDiv.style.display = "none";
+    setTimeout(() => {
+      progressDiv.style.display = "none";
+    }, 2000);
   }
 }
 
@@ -223,16 +204,9 @@ async function listCodebases() {
 
   try {
     const response = await fetch(`${API_BASE}/codebases`);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
     const data = await response.json();
-    const responseClass = data.success !== false ? "success" : "error";
-    const icon = data.success !== false ? "✅" : "❌";
 
-    responseDiv.innerHTML = `<span class="${responseClass}">${icon} Codebases Retrieved<br><pre>${JSON.stringify(
+    responseDiv.innerHTML = `<span class="success">✅ Codebases Retrieved<br><pre>${JSON.stringify(
       data,
       null,
       2
@@ -262,14 +236,10 @@ async function getCodebaseDetails() {
 
   try {
     const response = await fetch(`${API_BASE}/codebases/${directoryId}`);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-    }
-
     const data = await response.json();
-    const responseClass = data.success !== false ? "success" : "error";
-    const icon = data.success !== false ? "✅" : "❌";
+
+    const responseClass = data.success ? "success" : "error";
+    const icon = data.success ? "✅" : "❌";
 
     responseDiv.innerHTML = `<span class="${responseClass}">${icon} Codebase Details<br><pre>${JSON.stringify(
       data,
@@ -315,30 +285,18 @@ async function readFileMetadata() {
     const responseClass = data.success ? "success" : "error";
     const icon = data.success ? "✅" : "❌";
 
-    // Truncate content if it's too long for display
-    let displayData = { ...data };
-    if (
-      displayData.file &&
-      displayData.file.content &&
-      displayData.file.content.length > 1000
-    ) {
-      displayData.file.content =
-        displayData.file.content.substring(0, 1000) +
-        "\n... (content truncated for display)";
-    }
-
-    responseDiv.innerHTML = `<span class="${responseClass}">${icon} File Content<br><pre>${JSON.stringify(
-      displayData,
+    responseDiv.innerHTML = `<span class="${responseClass}">${icon} File Metadata<br><pre>${JSON.stringify(
+      data,
       null,
       2
     )}</pre></span>`;
     responseDiv.style.display = "block";
   } catch (error) {
-    responseDiv.innerHTML = `<span class="error">❌ Failed to read file content<br>Error: ${error.message}</span>`;
+    responseDiv.innerHTML = `<span class="error">❌ Failed to read file metadata<br>Error: ${error.message}<br><br>This route might be missing from your Go server's main() function.</span>`;
     responseDiv.style.display = "block";
   } finally {
     btn.disabled = false;
-    btn.textContent = "Read File Metadata";
+    btn.textContent = "Read File Content";
   }
 }
 
@@ -374,7 +332,7 @@ async function downloadFile() {
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = filePath.split("/").pop() || "downloaded_file"; // Get filename from path
+    a.download = filePath.split("/").pop(); // Get filename from path
     document.body.appendChild(a);
     a.click();
     window.URL.revokeObjectURL(url);
@@ -383,7 +341,7 @@ async function downloadFile() {
     responseDiv.innerHTML = `<span class="success">✅ File downloaded successfully!</span>`;
     responseDiv.style.display = "block";
   } catch (error) {
-    responseDiv.innerHTML = `<span class="error">❌ Failed to download file<br>Error: ${error.message}</span>`;
+    responseDiv.innerHTML = `<span class="error">❌ Failed to download file<br>Error: ${error.message}<br><br>This route might be missing from your Go server's main() function.</span>`;
     responseDiv.style.display = "block";
   } finally {
     btn.disabled = false;
@@ -425,7 +383,7 @@ async function downloadZip() {
     responseDiv.innerHTML = `<span class="success">✅ ZIP file downloaded successfully!</span>`;
     responseDiv.style.display = "block";
   } catch (error) {
-    responseDiv.innerHTML = `<span class="error">❌ Failed to download ZIP<br>Error: ${error.message}</span>`;
+    responseDiv.innerHTML = `<span class="error">❌ Failed to download ZIP<br>Error: ${error.message}<br><br>This route might be missing from your Go server's main() function.</span>`;
     responseDiv.style.display = "block";
   } finally {
     btn.disabled = false;
