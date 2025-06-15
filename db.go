@@ -16,7 +16,7 @@ func InitDB() {
 	// Use environment variable for database connection, fallback to default
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
-		dbURL = "user=postgres password=Ayan46@93#Yo dbname=postgres sslmode=disable"
+		dbURL = "user=postgres password=password dbname=postgres sslmode=disable"
 	}
 
 	db, err = sql.Open("postgres", dbURL)
